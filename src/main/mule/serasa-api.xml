@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!-- ================================================================
+         FLOW: Consulta Serasa por CNPJ
+         Contrato: GET /api/serasa/v1/consulta/{cnpj}
+         Response: JSON com dados cadastrais (mesmo contrato do mock)
+         ================================================================ -->
+    <flow name="serasa-consulta-cnpj">
+        <http:listener config-ref="API_Listener" path="/api/serasa/v1/consulta/{cnpj}" />
+
+        <set-variable variableName="cnpj" value="#[attributes.uriParams.cnpj]" />
+
+        <logger level="INFO"
+            message="#['[Serasa-API] Consulta CNPJ: ' ++ vars.cnpj]" />
+
+        <!-- Chamar Serasa API real -->
+        <try>
+            <http:request config-ref="Serasa_Request"
+                method="GET"
+                path="${serasa.basePath}/consulta/{cnpj}">
+                <http:uri-params>
+                    #[{ cnpj: vars.cnpj }]
+                </http:uri-params>
+                <http:headers>
+                    #[{
+                        'Authorization': 'Bearer ' ++ '${serasa.apiKey}',
+                        'Content-Type': 'application/json'
+                    }]
+                </http:headers>
+            </http:request>
+
+            <!-- Transformar response Serasa para contrato padrao -->
+            <ee:transform>
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var serasaData = payload
+---
+{
+    razaoSocial: serasaData.razaoSocial default serasaData.nome default "",
+    nomeFantasia: serasaData.nomeFantasia default serasaData.fantasia default "",
+    situacaoCnpj: serasaData.situacao default serasaData.situacaoCnpj default "",
+    dataFundacao: serasaData.dataAbertura default serasaData.dataFundacao default "",
+    codigoCnaeFiscal: serasaData.cnaeFiscal default serasaData.codigoCnaeFiscal default "",
+    codigoNaturezaJuridica: serasaData.naturezaJuridica default serasaData.codigoNaturezaJuridica default "",
+    inscricaoEstadual: serasaData.inscricaoEstadual default "",
+    ufRegistroIe: serasaData.uf default serasaData.ufRegistroIe default "",
+    situacaoRegistroIe: serasaData.situacaoIe default serasaData.situacaoRegistroIe default "",
+    porte: serasaData.porte default "",
+    endereco: {
+        logradouro: serasaData.logradouro default serasaData.endereco.logradouro default "",
+        numero: serasaData.numero default serasaData.endereco.numero default "",
+        bairro: serasaData.bairro default serasaData.endereco.bairro default "",
+        cidade: serasaData.municipio default serasaData.endereco.cidade default "",
+        uf: serasaData.uf default serasaData.endereco.uf default "",
+        cep: serasaData.cep default serasaData.endereco.cep default ""
+    }
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+
+            <logger level="INFO"
+                message="#['[Serasa-API] Sucesso CNPJ: ' ++ vars.cnpj]" />
+
+        <error-handler>
+            <!-- Serasa retornou 404 -->
+            <on-error-continue type="HTTP:NOT_FOUND">
+                <ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ error: "CNPJ nao encontrado", cnpj: vars.cnpj, status: 404 }]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+                <set-variable variableName="httpStatus" value="404" />
+            </on-error-continue>
+
+            <!-- Serasa timeout -->
+            <on-error-continue type="HTTP:TIMEOUT">
+                <ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ error: "Timeout na consulta Serasa", cnpj: vars.cnpj, status: 504 }]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+                <set-variable variableName="httpStatus" value="504" />
+            </on-error-continue>
+
+            <!-- Qualquer outro erro -->
+            <on-error-continue>
+                <ee:transform>
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ error: "Erro interno na consulta Serasa", cnpj: vars.cnpj, status: 500 }]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+                <set-variable variableName="httpStatus" value="500" />
+            </on-error-continue>
+        </error-handler>
+        </try>
+    </flow>
+
+    <!-- ================================================================
+         FLOW: Health Check
+         ================================================================ -->
+    <flow name="serasa-health">
+        <http:listener config-ref="API_Listener" path="/api/serasa/v1/health" />
+        <ee:transform>
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{ status: "ok", service: "algar-serasa-api", version: "1.0.0", timestamp: now() }]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+    </flow>
+
+</mule>
